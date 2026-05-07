@@ -1,0 +1,15 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.6
+python-dotenv>=1.0
+groq>=0.11
+google-generativeai>=0.7
+streamlit>=1.32
+requests>=2.31
+langchain>=0.3
+langchain-core>=0.3
+langchain-groq>=0.2
+langchain-google-genai>=2.0
+langchain-cerebras>=0.6
+langchain-openai>=0.3
+langchain-mistralai>=0.3

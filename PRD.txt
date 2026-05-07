@@ -1,0 +1,102 @@
+Product Requirement Document (PRD)
+:robot_face: Smart Seller Assistant for QuickVyapar
+1. Overview
+We are building a Smart Seller Assistant (Bot) that will automatically talk to buyers when a seller is not available.
+This assistant will:
+Reply to buyer messages instantly
+Share product details
+Help negotiate price
+Capture interested buyers for the seller
+:point_right: Goal: No customer should leave without getting a response
+2. Problem Statement
+Currently:
+Sellers are not always online
+Buyers leave if they don’t get quick replies
+Many sales opportunities are lost
+3. Solution
+The Smart Seller Assistant will:
+Act like a virtual salesperson
+Talk to buyers on behalf of the seller
+Answer common questions
+Try to close the deal
+4. Key Benefits
+For Sellers
+More sales without being online
+No missed customers
+Automated negotiation
+Saves time
+For Buyers
+Instant replies
+Better understanding of products
+Ability to negotiate price
+5. Features
+:speech_balloon: 1. Instant Chat Reply
+If seller is offline, bot replies automatically
+Works 24/7
+Gives quick answers
+Example:
+Buyer: “Is this available?”
+Bot: “Yes, it is available and ready to ship.”
+:package: 2. Product Information
+The bot will tell buyers:
+Product details
+Price
+Available options
+Stock status
+:moneybag: 3. Price Negotiation
+Buyers can ask for discount
+Bot will negotiate based on seller rules
+Example:
+Buyer: “Can you give it for ₹180?”
+Bot:
+If possible → “Yes, deal confirmed”
+If not → “Best price is ₹190”
+:gear: 4. Seller Control
+Seller can:
+Turn bot ON/OFF
+Set minimum price
+Set maximum discount
+Add common answers
+:bell: 5. Buyer Alerts
+Seller will get notified when:
+A buyer is interested
+A buyer negotiates
+A deal is close
+:bust_in_silhouette: 6. Talk to Seller Option
+Buyer can request real seller
+Seller can join chat anytime
+6. How It Works
+Step-by-Step Flow
+Buyer opens a product
+Buyer sends a message
+If seller is offline → bot replies
+Bot answers questions
+Buyer negotiates price
+Bot responds within limits
+Seller gets notified if needed
+7. What We Will Deliver (MVP)
+Chat system between buyer and bot
+Basic automatic replies
+Simple price negotiation
+Seller settings panel
+Notifications to seller
+8. Future Improvements
+Smarter AI responses
+Voice chat support
+WhatsApp integration
+Personalized recommendations
+9. Success Criteria
+We will measure success by:
+Increase in sales
+Faster response time
+More buyer engagement
+Fewer missed chats
+10. Timeline (High Level)
+Phase 1: Basic bot + chat → 2–4 weeks
+Phase 2: Advanced AI features → Next phase
+11. Summary
+This Smart Seller Assistant will:
+Work like a 24/7 sales agent
+Help sellers earn more
+Improve buyer experience
+Reduce lost opportunities

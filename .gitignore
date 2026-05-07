@@ -1,0 +1,50 @@
+# Secrets — NEVER commit
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Claude / Caveman local state
+.claude/settings.local.json
+.claude/projects/
+.claude/plugins/
+.claude/plans/
+
+# Logs
+*.log
+logs/
+
+# Personal documents (not part of project)
+*.docx
+*.pdf
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Generated / runtime data — keep source, drop derived
+# data/products_enriched.json  # uncomment if you don't want to commit derived data
