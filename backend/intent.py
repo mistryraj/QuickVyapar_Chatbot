@@ -39,7 +39,8 @@ OFF_TOPIC_KEYWORDS = {
     "your name", "are you ai", "are you human", "chatgpt", "gpt",
     "code", "python", "javascript", "math", "calculate", "capital of",
     "movie", "song", "cricket", "football", "election", "stock market",
-    "bitcoin", "crypto", "news",
+    "bitcoin", "crypto", "news", "modi", "rahul gandhi", "trump", "biden",
+    "putin", "xi jinping", "obama", "covid", "vaccine",
 }
 
 OFF_TOPIC_PATTERNS = [
@@ -49,9 +50,19 @@ OFF_TOPIC_PATTERNS = [
     r"\bwhat'?s\s+up\b",
     r"\bwassup\b",
     r"\b(tell|say)\s+(me\s+)?(a\s+)?(joke|story|poem)\b",
-    r"\bwho\s+(is|are)\s+the\s+(prime|president|ceo)",
+    # politicians / leaders — accept with or without "the"
+    r"\bwho\s+(is|are)\s+(the\s+)?(prime|president|ceo|pm|cm|king|queen|chairman)\b",
+    r"\bwho\s+(is|are)\s+(the\s+)?(pm|cm|president|prime\s+minister)\s+of\b",
+    r"\bpm\s+of\s+\w+",
+    r"\bcm\s+of\s+\w+",
+    r"\bpresident\s+of\s+\w+",
+    r"\b(india|pakistan|usa|america|china|russia|uk|britain)\b.*(pm|cm|president|leader|government)",
+    r"\b(pm|cm|president|leader)\b.*(india|pakistan|usa|america|china|russia|uk|britain)",
+    # math
     r"\b\d+\s*[+\-*/x×]\s*\d+\b",
     r"\b(calculate|compute|solve|equation)\b",
+    # capital cities
+    r"\bcapital\s+(of|city)\b",
 ]
 
 GREETING_PATTERNS = [

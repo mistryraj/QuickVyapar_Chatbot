@@ -248,7 +248,26 @@ def chat(req: ChatRequest) -> ChatResponse:
 
     if intent == "NEGOTIATE":
         target = None
-        if state.current_product_id:
+        # If the buyer named a *specific* product in this message, prefer that
+        # over a stale focal. Distinguishing tokens = overlap between message
+        # and the top retrieved product's title, minus generic noise words.
+        GENERIC = {
+            "tshirt", "t-shirt", "shirt", "shirts", "tshirts", "product", "products",
+            "price", "cost", "rate", "rs", "rupees", "rupee", "piece", "pcs",
+            "the", "a", "an", "for", "at", "of", "do", "you", "can", "could",
+            "would", "will", "give", "sell", "offer", "this", "that", "it",
+        }
+        if retrieved:
+            top = retrieved[0]
+            top_tokens = set(re.findall(r"[a-z0-9]+", (top.get("title") or "").lower())) - GENERIC
+            named_tokens = msg_tokens & top_tokens
+            current_id = state.current_product_id
+            if (
+                top.get("post_id") != current_id
+                and len(named_tokens) >= 1  # any non-generic match -> trust search
+            ):
+                target = top
+        if target is None and state.current_product_id:
             target = CATALOG.get(state.current_product_id)
         if target is None and retrieved:
             target = retrieved[0]
@@ -257,6 +276,12 @@ def chat(req: ChatRequest) -> ChatResponse:
             reply = "Which product are you negotiating for? I can share options if you'd like."
             sess.append(req.session_id, "assistant", reply)
             return ChatResponse(reply=reply, intent=intent)
+
+        # Switching focal mid-conversation → reset round counter so new haggling
+        # starts fresh, not on round 3+ from a different product.
+        if target.get("post_id") != state.current_product_id:
+            sess.reset_negotiation(req.session_id)
+            state.current_product_id = target.get("post_id")
 
         offer = extract_offer(req.message)
         state.negotiation_round += 1
