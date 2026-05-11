@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from . import session as sess
-from .agent import run_agent
+from .agent import run_agent, _template_reply
 from .catalog import load_catalog
 from .intent import classify, extract_offer
 from .negotiation import negotiate
@@ -77,6 +77,43 @@ def _deal_confirmation_reply(product: dict, agreed_price: int) -> str:
         f"{_contact_block(product)}\n\n"
         f"Thank you for shopping with us! 🙏"
     )
+
+
+_LIST_ALL_HINTS = (
+    "what products", "what do you have", "what all", "show all", "list all",
+    "all product", "everything you have", "your products", "show me products",
+    "what are your", "available products", "product list", "catalogue", "catalog",
+)
+_PRICE_HINTS = ("price", "rate", "cost", "how much", "kitne", "kitna", "kitana", "daam", "kimat")
+_DETAIL_HINTS = ("tell me about", "details", "detail of", "describe", "more about", "info on",
+                 "information about", "what about", "specs", "specification")
+_FOLLOWUP_HINTS = ("is it ", "is this ", "does it ", "what size", "which size", "in stock",
+                   "available", "fabric", "material", "colour", "color", "gsm", "cotton",
+                   "polyester", "polyster")
+_HAVE_HINTS = ("do you have", "do you sell", "have you got", "got any", "any ", "looking for")
+
+
+def _is_simple_product_query(msg: str) -> bool:
+    """True if the message is one of the easy, deterministic-answerable shapes:
+    list-all, price-of-X, tell-me-about-X, or a short fabric/stock follow-up.
+    These are answered straight from the catalog (see _template_reply) instead
+    of going through the unreliable free-tier tool-calling agent.
+    """
+    m = (msg or "").lower().strip()
+    if not m:
+        return True
+    if any(h in m for h in _LIST_ALL_HINTS):
+        return True
+    if any(h in m for h in _PRICE_HINTS):
+        return True
+    if any(h in m for h in _DETAIL_HINTS):
+        return True
+    if any(h in m for h in _HAVE_HINTS):
+        return True
+    # short follow-ups about the focal product
+    if len(m.split()) <= 7 and any(h in m for h in _FOLLOWUP_HINTS):
+        return True
+    return False
 
 
 def _to_lite(products) -> List[ProductLite]:
@@ -331,13 +368,29 @@ def chat(req: ChatRequest) -> ChatResponse:
             notify_seller=False,
         )
 
-    # PRODUCT_QUERY — hand off to the LangChain tool-calling agent.
-    # Track the focal product for follow-ups. Only reset negotiation when focus changes.
-    if retrieved:
+    # PRODUCT_QUERY — track focal product. Only reset negotiation when focus changes.
+    if retrieved and not looks_like_followup:
         new_focus = retrieved[0].get("post_id")
         if new_focus != state.current_product_id:
             state.current_product_id = new_focus
             sess.reset_negotiation(req.session_id)
+
+    # Fast deterministic path for the common, easy query shapes (list all,
+    # "price of X", "tell me about X", fabric/stock follow-ups). Free-tier LLMs
+    # are unreliable at tool-calling, so we answer these straight from the
+    # catalog — guaranteed correct, zero latency, zero cost. Only genuinely
+    # open-ended queries fall through to the agent.
+    if _is_simple_product_query(req.message):
+        reply = _template_reply(CATALOG, state, req.message)
+        sess.append(req.session_id, "assistant", reply)
+        focal = CATALOG.get(state.current_product_id) if state.current_product_id else None
+        return ChatResponse(
+            reply=reply,
+            intent=intent,
+            products=_to_lite([focal] if focal else retrieved[:3]),
+            negotiation=None,
+            notify_seller=False,
+        )
 
     deal_was_accepted_before = state.deal_accepted
     reply = run_agent(CATALOG, state, req.message)

@@ -46,8 +46,10 @@ OUTPUT RULES:
 2. When listing products, format as a numbered list: `1. **Title** — ₹price (qty in stock)`. Limit to 6.
 3. When buyer names a specific product (e.g. "tell me about Round Neck"), pick the single best match from search and answer ONLY about that one. Do not list multiple unrelated items.
 4. If a detail isn't in tool output, say honestly: "I don't have that detail handy — want me to check with the seller?"
-5. For ANY haggling, you MUST call negotiate_price. Never invent discounts.
-6. Reply in buyer's language (English / Hindi / Hinglish / Gujarati). Quote prices with ₹. Keep it under 80 words unless listing.
+5. Call negotiate_price ONLY when THIS message states a price, makes an offer, or explicitly asks for a discount / lower price. For plain questions like "what products do you have", "price of X", "is it cotton", "show me tshirts" — DO NOT call negotiate_price; use list_all_products / search_products / get_product_details and just answer.
+6. Ignore the subject of earlier turns when the current message changes topic. If the buyer was negotiating before but now asks "what do you have", answer the new question — do not continue the old negotiation.
+7. Never invent a discount or counter-price. Only negotiate_price produces one.
+8. Reply in buyer's language (English / Hindi / Hinglish / Gujarati). Quote prices with ₹. Keep it under 80 words unless listing.
 """
 
 
@@ -249,9 +251,85 @@ def _build_model_chain():
 _make_model = _build_model_chain
 
 
+_GENERIC_WORDS = {
+    "tshirt", "t-shirt", "shirt", "shirts", "tshirts", "product", "products",
+    "tell", "me", "about", "details", "detail", "info", "information", "the",
+    "a", "an", "of", "for", "is", "it", "this", "that", "your", "you", "have",
+    "do", "show", "what", "which", "price", "rate", "cost", "stock", "available",
+    "give", "want", "need", "please", "fabric", "size", "sizes",
+}
+
+
+def _format_one(p: dict) -> str:
+    """Friendly multi-line description of a single product (deterministic)."""
+    title = (p.get("title") or "").strip()
+    price = p.get("priceInt") or p.get("price")
+    unit = (p.get("priceUnitType") or "").strip()
+    qty = p.get("quantity", "?")
+    qunit = (p.get("quantityUnitType") or "").strip()
+    cat = (p.get("categoryName") or "").strip()
+    desc = (p.get("description") or "").strip()
+    seller = (p.get("user_name") or p.get("postCompany") or "the seller").strip()
+    loc = ", ".join(x for x in [
+        (p.get("location") or "").strip(),
+        (p.get("districtName") or "").strip(),
+        (p.get("stateName") or "").strip(),
+    ] if x)
+    lines = [f"**{title}**", ""]
+    lines.append(f"• Price: ₹{price} {unit}".rstrip())
+    if cat:
+        lines.append(f"• Category: {cat}")
+    lines.append(f"• In stock: {qty} {qunit}".rstrip())
+    if seller:
+        lines.append(f"• Seller: {seller}" + (f" ({loc})" if loc else ""))
+    if desc:
+        snippet = desc if len(desc) <= 400 else desc[:400].rsplit(" ", 1)[0] + "…"
+        lines.append("")
+        lines.append(snippet)
+    lines.append("")
+    lines.append("Want a small discount on this, or details of another item?")
+    return "\n".join(lines)
+
+
+def _best_match(catalog: Catalog, user_msg: str, state: SessionState):
+    """Pick the single product the buyer most likely means.
+
+    Returns (product_or_None, is_followup). `is_followup` True means the query
+    was a pronoun-y follow-up about the already-focal product ("is it cotton",
+    "price?") rather than a fresh product mention.
+    """
+    import re as _re
+    m = (user_msg or "").lower().strip()
+    focal = catalog.get(state.current_product_id) if state.current_product_id else None
+
+    # Pronoun-y follow-up patterns -> stay on the focal product.
+    followup = bool(_re.match(
+        r"^(is|does|do|are)\s+(it|this|that|they|these)\b", m
+    )) or bool(_re.match(
+        r"^(what|how)\s+about\s+(it|this|that)\b", m
+    )) or m in {"price?", "price", "and the price?", "how much?", "how much"} or (
+        # very short + focal set + no obvious product noun
+        focal is not None and len(m.split()) <= 4
+        and not (set(_re.findall(r"[a-z0-9]+", m)) - _GENERIC_WORDS)
+    )
+    if followup and focal is not None:
+        return focal, True
+
+    results = catalog.search(user_msg, k=5)
+    if results:
+        return results[0], False
+    # No keyword match at all. If there's a focal AND the query is plausibly
+    # still about it (no new distinctive nouns), use it; otherwise None.
+    distinctive = set(_re.findall(r"[a-z0-9]+", m)) - _GENERIC_WORDS
+    if focal is not None and not distinctive:
+        return focal, True
+    return None, False
+
+
 def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str:
     """Deterministic non-LLM responder. Final tier — never raises, always returns text.
-    Used when every LLM provider fails (rate limits, network, expired keys).
+    Used when every LLM provider fails (rate limits, malformed tool calls, outages).
+    Tries to actually answer the question, not just dump a list.
     """
     intent = classify(user_msg)
     msg_lower = user_msg.lower()
@@ -259,40 +337,64 @@ def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str
     if intent == "GREETING":
         return ("Hi 👋 Welcome to QuickVyapar! I can share product details, prices, "
                 "sizes, stock, and help you negotiate. What are you looking for?")
-
     if intent == "OFF_TOPIC":
         return ("That's a great question, but I'm here just to help with our products. "
                 "Want to see what we have?")
-
     if intent == "FAREWELL":
-        return ("Glad I could help 🙏 Have a great day!")
+        return "Glad I could help 🙏 Have a great day!"
 
-    # PRODUCT_QUERY / NEGOTIATE / REQUEST_HUMAN / unknown — show catalog grounded reply.
-    listed_all = any(k in msg_lower for k in ("all", "everything", "list", "show me"))
-    if listed_all or not user_msg.strip():
-        items = catalog.all()[:8]
-        header = f"Here are {len(items)} products from our catalog:"
-    else:
-        items = catalog.search(user_msg, k=6)
-        if not items:
-            items = catalog.all()[:6]
-            header = "I couldn't find an exact match, but here's what we have:"
-        else:
-            header = f"Found {len(items)} matching product(s):"
+    wants_list = (not user_msg.strip()) or any(
+        k in msg_lower for k in ("all product", "all the product", "everything",
+                                 "list all", "show all", "what products", "what do you have",
+                                 "what all", "show me products", "your products")
+    )
+    if wants_list:
+        items = catalog.all()
+        lines = [f"Here are all {len(items)} products in our catalog:", ""]
+        for i, p in enumerate(items, 1):
+            t = (p.get("title") or "").strip()
+            pr = p.get("priceInt") or p.get("price")
+            u = (p.get("priceUnitType") or "").strip()
+            q = p.get("quantity", "?")
+            lines.append(f"{i}. **{t}** — ₹{pr} {u} ({q} in stock)".replace("  ", " "))
+        lines.append("")
+        lines.append("Tell me which one you'd like details on, or ask for a discount.")
+        return "\n".join(lines)
 
-    if len(items) == 1:
-        state.current_product_id = items[0].get("post_id")
+    # Specific-product question (price / details / fabric / "tell me about X" / follow-up).
+    p, is_followup = _best_match(catalog, user_msg, state)
+    if p is not None:
+        state.current_product_id = p.get("post_id")
+        asks_price_only = any(k in msg_lower for k in ("price", "rate", "cost", "how much", "kitne", "kitna", "daam")) \
+            and not any(k in msg_lower for k in ("detail", "about", "tell me", "describe", "more"))
+        if asks_price_only:
+            price = p.get("priceInt") or p.get("price")
+            unit = (p.get("priceUnitType") or "").strip()
+            return (f"The price of **{(p.get('title') or '').strip()}** is ₹{price} {unit}".rstrip()
+                    + ". Want a discount on it?")
+        # Fabric / material follow-up — pull the line from the description if present.
+        if is_followup and any(k in msg_lower for k in ("cotton", "polyester", "polyster", "fabric", "material", "gsm")):
+            desc = (p.get("description") or "")
+            fab_line = next((ln.strip(" -•\t") for ln in desc.splitlines()
+                             if any(w in ln.lower() for w in ("fabric", "cotton", "polyester", "polyster", "gsm", "metty", "blend"))), "")
+            title = (p.get("title") or "").strip()
+            if fab_line:
+                return f"For **{title}** — {fab_line}\n\nWant more details or a discount on it?"
+            return f"Here's what I have on **{title}**:\n\n{_format_one(p)}"
+        return _format_one(p)
 
-    lines = [header, ""]
-    for i, p in enumerate(items, 1):
-        title = (p.get("title") or "").strip()
-        price = p.get("priceInt") or p.get("price")
-        unit = p.get("priceUnitType", "") or ""
-        qty = p.get("quantity", "?")
-        lines.append(f"{i}. **{title}** — ₹{price} {unit} ({qty} in stock)")
-
+    # Nothing matched — and not a follow-up. Be honest: not in catalog.
+    items = catalog.all()
+    lines = [
+        "I don't have that in the catalog right now. Here's everything we do have:",
+        "",
+    ]
+    for i, q in enumerate(items, 1):
+        t = (q.get("title") or "").strip()
+        pr = q.get("priceInt") or q.get("price")
+        lines.append(f"{i}. **{t}** — ₹{pr}")
     lines.append("")
-    lines.append("Let me know which one you'd like to know more about, or ask for a discount.")
+    lines.append("Want details on any of these?")
     return "\n".join(lines)
 
 
@@ -307,24 +409,37 @@ def run_agent(catalog: Catalog, state: SessionState, user_message: str) -> str:
     tools = build_tools(catalog, state)
     agent = create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
-    # Replay last 2 turns only — keeps token usage low while preserving pronoun context.
+    # Replay ONLY the last prior buyer message (not assistant replies). This
+    # gives just enough context to resolve pronouns ("is it cotton") without
+    # anchoring the weak model to the *topic* of the previous bot reply (e.g.
+    # an in-progress negotiation). The focal product itself is carried in
+    # `state.current_product_id`, which the tools read directly.
     history_msgs = []
-    for m in state.history[-5:-1]:  # exclude the just-appended user msg
+    prior_user = None
+    for m in reversed(state.history[:-1]):  # skip the just-appended user msg
         if m["role"] == "user":
-            history_msgs.append(HumanMessage(content=m["content"]))
-        elif m["role"] == "assistant":
-            # Truncate prior assistant replies — we only need pronoun context.
-            content = m["content"]
-            if len(content) > 200:
-                content = content[:200] + "…"
-            history_msgs.append(AIMessage(content=content))
+            prior_user = m["content"]
+            break
+    if prior_user and prior_user.strip().lower() != user_message.strip().lower():
+        history_msgs.append(HumanMessage(content=f"(earlier the buyer asked: {prior_user})"))
 
     messages = history_msgs + [HumanMessage(content=user_message)]
 
-    try:
-        result = agent.invoke({"messages": messages})
-    except Exception as e:
-        logger.warning("All LLM tiers failed (%s) — using template fallback.", e)
+    result = None
+    last_err = None
+    for attempt in range(2):  # one retry — Groq llama often emits a bad tool call once, then recovers
+        try:
+            result = agent.invoke({"messages": messages})
+            break
+        except Exception as e:
+            last_err = e
+            msg = str(e).lower()
+            if "tool_use_failed" in msg or "failed to call a function" in msg or "tool call validation" in msg:
+                logger.warning("Tool-call malformed (attempt %d) — retrying.", attempt + 1)
+                continue
+            break  # other errors: don't retry, drop to template
+    if result is None:
+        logger.warning("Agent failed (%s) — using deterministic template responder.", last_err)
         return _template_reply(catalog, state, user_message)
 
     # Extract final assistant message.

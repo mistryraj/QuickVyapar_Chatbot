@@ -15,16 +15,18 @@ def _tokenize(text: str) -> set:
 class Catalog:
     def __init__(self, products: List[dict]) -> None:
         self.products = products
-        self._index = [
-            (p, _tokenize(" ".join([
-                p.get("title", ""),
+        # Per product keep separate token sets so title matches can be weighted
+        # higher than description / category matches during search.
+        self._index = []
+        for p in products:
+            title_tok = _tokenize(p.get("title", ""))
+            other_tok = _tokenize(" ".join([
                 p.get("description", ""),
                 p.get("categoryName", ""),
                 p.get("postCompany", ""),
                 p.get("user_name", ""),
-            ])))
-            for p in products
-        ]
+            ]))
+            self._index.append((p, title_tok, other_tok))
         self._by_id = {p["post_id"]: p for p in products if p.get("post_id")}
 
     def all(self) -> List[dict]:
@@ -38,13 +40,18 @@ class Catalog:
         if not q_tokens:
             return self.products[:k]
         scored = []
-        for product, tokens in self._index:
-            overlap = len(q_tokens & tokens)
-            if overlap == 0:
+        for product, title_tok, other_tok in self._index:
+            title_hits = len(q_tokens & title_tok)
+            other_hits = len(q_tokens & other_tok)
+            if title_hits == 0 and other_hits == 0:
                 continue
-            scored.append((overlap, product))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [p for _, p in scored[:k]]
+            # Title hits weigh 3x; tie-break by total hits. So a product whose
+            # *title* is "Round Neck" beats one that only has "Round Neck" in
+            # its category name.
+            score = title_hits * 3 + other_hits
+            scored.append((score, title_hits, product))
+        scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [p for _, _, p in scored[:k]]
 
     def summary_for_llm(self, products: List[dict]) -> str:
         lines = []

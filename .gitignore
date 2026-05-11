@@ -38,12 +38,15 @@ Thumbs.db
 *.log
 logs/
 
-# Personal documents (not part of project)
-*.docx
-*.pdf
-
 # Streamlit
 .streamlit/secrets.toml
 
 # Generated / runtime data — keep source, drop derived
 # data/products_enriched.json  # uncomment if you don't want to commit derived data
+*.docx
+*.pdf
+
+# Internship report tooling — not part of the chatbot project
+docs/
+scripts/generate_internship_report.py
+scripts/render_diagrams.py

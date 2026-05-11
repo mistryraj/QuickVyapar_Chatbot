@@ -25,5 +25,9 @@ MISTRAL_MODEL = os.getenv("MISTRAL_MODEL", "mistral-small-latest").strip()
 DATA_FILE = ROOT / "data" / "products_enriched.json"
 RAW_PRODUCTS_FILE = ROOT / "products.json"
 
+# Optional pgvector semantic search. Empty DATABASE_URL => keyword search only.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+EMBED_MODEL = os.getenv("EMBED_MODEL", "sentence-transformers/all-MiniLM-L6-v2").strip()
+
 MAX_HISTORY_TURNS = 10
 LLM_TIMEOUT_SECONDS = 8
