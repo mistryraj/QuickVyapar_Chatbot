@@ -13,3 +13,8 @@ langchain-google-genai>=2.0
 langchain-cerebras>=0.6
 langchain-openai>=0.3
 langchain-mistralai>=0.3
+
+# Optional — PostgreSQL + semantic search (scripts/ingest_to_postgres.py, backend/vectorstore.py)
+psycopg2-binary>=2.9
+sentence-transformers>=3.0
+numpy>=1.26
