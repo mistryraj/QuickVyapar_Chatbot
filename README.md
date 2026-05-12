@@ -41,6 +41,8 @@ python -m scripts.chat_cli          # interactive chat (hits the app in-process)
 python -m scripts.test_no_hallucination   # 67 headless guardrail assertions
 ```
 
+(`test_no_hallucination.py` forces UTF-8 on stdout/stderr so it runs on a Windows cp1252 console without an `UnicodeEncodeError` on the `✓`/`₹` glyphs.)
+
 `scripts/chat_cli.py` prints the reply plus metadata (`intent`, negotiation verdict, focal products, flags) for each turn. Suggested demo script:
 
 ```
@@ -89,12 +91,12 @@ python -m scripts.ingest_to_postgres
 | `FAREWELL` | rule-based + contact block | no | guaranteed seller info |
 | `REQUEST_HUMAN` | rule-based + contact block | no | guaranteed seller info |
 | `NEGOTIATE` | deterministic engine + `message_hint` | no | math never hallucinates |
-| `PRODUCT_QUERY` (simple) | **deterministic catalog responder** | no | "what products", "price of X", "tell me about X", "is it cotton", "do you have X" — answered straight from data, instant, can't fail |
+| `PRODUCT_QUERY` (simple) | **deterministic catalog responder** | no | list-all (any phrasing), "price of X", "tell me about X", "is it cotton", "do you have X", "cheapest / most expensive", "compare X and Y", "tshirt under ₹N" — answered straight from data, instant, can't fail |
 | `PRODUCT_QUERY` (open-ended) | **LangChain tool-calling agent** | yes | only genuinely complex queries; falls back to the deterministic responder if the LLM is down or emits a malformed tool call |
 
 Intent classifier: rule-first (`backend/intent.py`). Cheap, fast, no LLM.
 
-`backend/main.py:_is_simple_product_query()` routes the easy, high-frequency query shapes to a deterministic responder (`backend/agent.py:_template_reply`) — free-tier LLMs are unreliable at tool-calling, so the bot answers these directly from the catalog. Only the rest hit the agent.
+`backend/main.py:_is_simple_product_query()` routes the easy, high-frequency query shapes to a deterministic responder (`backend/agent.py:_template_reply`) — free-tier LLMs are unreliable at tool-calling, so the bot answers these directly from the catalog. Only the rest hit the agent. The deterministic responder handles list-all (order-independent phrasing detector), single-product detail, price-only, fabric/material follow-ups, **cheapest / most expensive** (min/max by `priceInt`), **compare X and Y** (both products' real fields side by side, never cross-attributed), and **price-range filters** (`under ₹N`, `over ₹N`).
 
 Agent (`backend/agent.py`) uses `langchain.agents.create_agent` with tools:
 - `list_all_products()` → full catalog
@@ -149,10 +151,19 @@ Each tier is tried in order; on `RateLimitError`, network failure, timeout, or a
 
 - Retrieval-grounded: only matched products in agent context.
 - Pricing math 100% deterministic (`backend/negotiation.py`). LLM cannot override.
+- `extract_offer()` strips quantity phrases (`500 pieces`, `order 200 units`) before reading a price — a bulk-order count is never mistaken for a buyer's offer (which would auto-confirm a deal at the listed price).
+- NEGOTIATE target picker ignores bare-number overlap (`₹100` vs `100% cotton`) — a buyer haggling stays on the product in focus instead of jumping to whatever the offer digits happen to keyword-match.
+- Catalog search drops stopword-only queries and `_best_match` rejects incidental hits (e.g. `iphone 15` latching onto `…15% polyster`) → honest "not in catalog" instead of a random product card.
 - Off-topic gated by rule classifier before any LLM call.
-- Tool returns are real catalog data; agent told to refuse if detail absent.
+- Tool returns are real catalog data; agent told to refuse if a detail is absent and never to attribute one product's fabric/price/description to another when comparing.
 - Low temperature (0.3).
 - Hard guardrail: any LLM reply starting with off-topic refusal stub gets replaced with canned text.
+
+## UI notes (`ui/app.py`)
+
+- Chat history widget keys are derived from message index (not `list.index()`), so repeated identical replies don't collide → no `StreamlitDuplicateElementKey` crash.
+- Product cards only carry the "🤖 Ask about this" button in multi-product lists. A single-product reply (detail, follow-up, negotiation context) shows the card without the button — clicking it would just re-ask about the item already in focus. Single-product detail replies whose text already contains the product card skip the duplicate card entirely.
+- `GET /chat` returns the full catalog in `products` when the reply is a list-all, `[]` for not-found / price-range replies, otherwise the focal product — so the UI gallery matches the text.
 
 ## Files
 
@@ -185,12 +196,17 @@ PRD.txt           # requirements
 ## Test scenarios
 
 In the Streamlit UI or `python -m scripts.chat_cli`:
-- "What products do you have?" → numbered list of all 9 (deterministic).
+- "What products do you have?" / "what are the products available with you?" / "show me what you've got" → numbered list of all 9 (deterministic, any phrasing).
 - "Price of jai sri ram tshirt?" → ₹239 (deterministic).
 - "Tell me about Round Neck" → full product card (deterministic).
-- "Is it cotton?" → answers about the focal product, not a random match.
+- "Is it cotton?" → answers about the focal product (Round Neck → Metty), not a random match.
+- "Which is your cheapest tshirt?" → ₹125 item. "Most expensive?" → ₹250 item.
+- "Compare Round Neck and jai sri ram tshirt" → both products' real fields, no mixing.
+- "Any tshirt under ₹140?" → just the ₹125 + ₹130 items.
 - "Can you do ₹180 for polyster dotnet tshirt?" (₹130 listed, ~₹110 floor) → accept + contact block.
 - "Can you do ₹100?" on a ₹130 item → counter ₹115 (round 1) → ₹110 (round 3).
+- "Can I get a bulk discount for 500 pieces of round neck?" → generic-discount teaser, **not** a confirmed ₹150 deal (the `500` is a quantity, not an offer).
+- "Tell me about the iPhone 15" → "not in catalog" (no random tshirt card).
 - "Who is PM of India?" → polite redirect, zero LLM cost.
 - "I want to talk to the seller" → contact block + `notify_seller=true`.
 - "do you have shoes?" → polite "not in catalog".
