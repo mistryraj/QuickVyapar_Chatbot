@@ -7,6 +7,21 @@ from .config import DATA_FILE
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
+# Words that carry no product signal. Stripped from a *query* before scoring so
+# junk like "tell me about the iphone 15" doesn't match a random product just
+# because "about"/"the" happen to appear in some description. Catalog-side tokens
+# are left intact.
+_QUERY_STOPWORDS = {
+    "a", "an", "the", "of", "for", "to", "in", "on", "with", "and", "or",
+    "is", "are", "it", "this", "that", "these", "those", "be", "do", "does",
+    "did", "have", "has", "had", "you", "your", "u", "i", "me", "my", "we",
+    "tell", "show", "give", "get", "want", "need", "please", "looking", "look",
+    "about", "more", "info", "information", "detail", "details", "describe",
+    "what", "which", "who", "how", "where", "when", "any", "some", "all",
+    "can", "could", "would", "will", "should", "hi", "hello", "hey", "there",
+    "kya", "hai", "ka", "ki", "ke", "ko", "mujhe", "muje", "bata", "batao",
+}
+
 
 def _tokenize(text: str) -> set:
     return set(_TOKEN_RE.findall((text or "").lower()))
@@ -36,9 +51,15 @@ class Catalog:
         return self._by_id.get(post_id)
 
     def search(self, query: str, k: int = 5) -> List[dict]:
-        q_tokens = _tokenize(query)
-        if not q_tokens:
+        raw = _tokenize(query)
+        if not raw:
             return self.products[:k]
+        q_tokens = raw - _QUERY_STOPWORDS
+        if not q_tokens:
+            # Query was nothing but stopwords ("tell me about it"). No real
+            # signal — return nothing so callers fall back to focal product or
+            # an honest "not in catalog" instead of matching a random item.
+            return []
         scored = []
         for product, title_tok, other_tok in self._index:
             title_hits = len(q_tokens & title_tok)

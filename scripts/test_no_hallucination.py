@@ -7,6 +7,13 @@ Run: python -m scripts.test_no_hallucination
 import sys
 from pathlib import Path
 
+# Windows consoles default to cp1252, which can't encode ✓/✗/≤/₹ — force UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 

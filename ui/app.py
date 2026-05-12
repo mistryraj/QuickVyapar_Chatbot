@@ -392,7 +392,20 @@ def render_meta(meta: dict, msg_idx: int | None = None):
     if not prods or meta.get("intent") in (None, "GREETING", "FAREWELL", "OFF_TOPIC"):
         return
 
-    for i, p in enumerate(prods[:6]):
+    # Single-product detail reply: the text already renders the full product card,
+    # so an extra card with another "Ask about this" button is just a redundant
+    # loop (clicking it re-asks the same thing). Skip it.
+    reply_text = (meta.get("reply") or "").lower()
+    if (meta.get("intent") == "PRODUCT_QUERY" and len(prods) == 1
+            and (prods[0].get("title") or "").strip().lower() in reply_text):
+        return
+
+    # Button only makes sense when there's a list to pick from. For a single
+    # product (negotiation context, follow-up) it's the one already in focus —
+    # the button would just re-ask about it, so show the card without it.
+    show_button = len(prods) > 1
+
+    for i, p in enumerate(prods[:12]):
         img = p.get("image") or "https://via.placeholder.com/80/0d1018/22d3ee?text=No+Image"
         title = (p.get("title") or "").strip()
         price = p.get("price")
@@ -401,10 +414,10 @@ def render_meta(meta: dict, msg_idx: int | None = None):
         seller = (p.get("user_name", "") or "").strip()[:30]
 
         with st.container(border=True):
-            c1, c2, c3 = st.columns([1, 3, 2])
-            with c1:
+            cols = st.columns([1, 3, 2]) if show_button else st.columns([1, 5])
+            with cols[0]:
                 st.image(img, width=80)
-            with c2:
+            with cols[1]:
                 st.markdown(f"**{title[:60]}**")
                 st.caption(f"{seller} · {category}")
                 st.markdown(
@@ -412,13 +425,14 @@ def render_meta(meta: dict, msg_idx: int | None = None):
                     f"<span class='small-muted'>{unit}</span>",
                     unsafe_allow_html=True,
                 )
-            with c3:
-                key = f"chat_ask_{msg_idx}_{i}_{p.get('post_id','')}"
-                if st.button("🤖 Ask about this", key=key,
-                             use_container_width=True,
-                             disabled=ss.chat_ended):
-                    queue_chat(f"Tell me more about {title}")
-                    st.rerun()
+            if show_button:
+                with cols[2]:
+                    key = f"chat_ask_{msg_idx}_{i}_{p.get('post_id','')}"
+                    if st.button("🤖 Ask about this", key=key,
+                                 use_container_width=True,
+                                 disabled=ss.chat_ended):
+                        queue_chat(f"Tell me more about {title}")
+                        st.rerun()
 
 
 def render_chat():
@@ -457,11 +471,11 @@ def render_chat():
                 )
 
     # History
-    for msg in ss.messages:
+    for i, msg in enumerate(ss.messages):
         avatar = "🤖" if msg["role"] == "assistant" else "🧑"
         with st.chat_message(msg["role"], avatar=avatar):
             st.markdown(msg["content"])
-            render_meta(msg.get("meta") or {}, msg_idx=ss.messages.index(msg))
+            render_meta(msg.get("meta") or {}, msg_idx=i)
 
     # Pending input → backend → typed reply
     pending = ss.pending_input

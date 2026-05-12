@@ -12,6 +12,7 @@ Critical guarantees preserved:
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from langchain.agents import create_agent
@@ -49,7 +50,9 @@ OUTPUT RULES:
 5. Call negotiate_price ONLY when THIS message states a price, makes an offer, or explicitly asks for a discount / lower price. For plain questions like "what products do you have", "price of X", "is it cotton", "show me tshirts" — DO NOT call negotiate_price; use list_all_products / search_products / get_product_details and just answer.
 6. Ignore the subject of earlier turns when the current message changes topic. If the buyer was negotiating before but now asks "what do you have", answer the new question — do not continue the old negotiation.
 7. Never invent a discount or counter-price. Only negotiate_price produces one.
-8. Reply in buyer's language (English / Hindi / Hinglish / Gujarati). Quote prices with ₹. Keep it under 80 words unless listing.
+8. When comparing two products, call search_products / get_product_details for EACH one and report only the facts returned for that specific item. Never attribute one product's fabric, price, or description to another. If a fact is missing for one of them, say so rather than guessing.
+9. "Cheapest" / "most expensive" / "under ₹X" are catalog questions, not haggling — use list_all_products / search_products and compare prices yourself. Do NOT call negotiate_price for these.
+10. Reply in buyer's language (English / Hindi / Hinglish / Gujarati). Quote prices with ₹. Keep it under 80 words unless listing.
 """
 
 
@@ -260,7 +263,15 @@ _GENERIC_WORDS = {
 }
 
 
-def _format_one(p: dict) -> str:
+def _price_of(p: dict) -> int:
+    """Listed price as int, 0 if unparseable."""
+    try:
+        return int(p.get("priceInt") or p.get("price") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _format_one(p: dict, with_cta: bool = True) -> str:
     """Friendly multi-line description of a single product (deterministic)."""
     title = (p.get("title") or "").strip()
     price = p.get("priceInt") or p.get("price")
@@ -286,9 +297,85 @@ def _format_one(p: dict) -> str:
         snippet = desc if len(desc) <= 400 else desc[:400].rsplit(" ", 1)[0] + "…"
         lines.append("")
         lines.append(snippet)
-    lines.append("")
-    lines.append("Want a small discount on this, or details of another item?")
+    if with_cta:
+        lines.append("")
+        lines.append("Want a small discount on this, or details of another item?")
     return "\n".join(lines)
+
+
+_RANGE_RE = re.compile(
+    r"\b(under|below|less\s+than|cheaper\s+than|within|upto|up\s+to|at\s+most|"
+    r"max(?:imum)?|over|above|more\s+than|at\s+least|min(?:imum)?)\s*₹?\s*(\d{2,6})\b",
+    re.IGNORECASE,
+)
+_CHEAPEST_KEYS = ("cheapest", "lowest price", "lowest priced", "lowest-priced",
+                  "least expensive", "most affordable", "lowest cost", "minimum price")
+_PRICIEST_KEYS = ("most expensive", "costliest", "priciest", "highest price",
+                  "highest priced", "highest-priced", "dearest", "maximum price")
+_COMPARE_KEYS = (" vs ", " vs.", "versus", "compare", "comparison",
+                 "difference between", "which is better", "which one is better")
+
+
+def _superlative_reply(catalog: Catalog, state: SessionState, msg_lower: str) -> Optional[str]:
+    items = [p for p in catalog.all() if _price_of(p) > 0]
+    if not items:
+        return None
+    if any(k in msg_lower for k in _CHEAPEST_KEYS):
+        p = min(items, key=_price_of)
+        lead = f"Our most affordable option is **{(p.get('title') or '').strip()}** at ₹{_price_of(p)}."
+    elif any(k in msg_lower for k in _PRICIEST_KEYS):
+        p = max(items, key=_price_of)
+        lead = f"Our highest-priced item is **{(p.get('title') or '').strip()}** at ₹{_price_of(p)}."
+    else:
+        return None
+    state.current_product_id = p.get("post_id")
+    return f"{lead}\n\n{_format_one(p)}"
+
+
+def _range_reply(catalog: Catalog, msg_lower: str) -> Optional[str]:
+    m = _RANGE_RE.search(msg_lower)
+    if not m:
+        return None
+    word = re.sub(r"\s+", " ", m.group(1).lower())
+    num = int(m.group(2))
+    upper = word in {"under", "below", "less than", "cheaper than", "within",
+                     "upto", "up to", "at most", "max", "maximum"}
+    if upper:
+        hits = [p for p in catalog.all() if 0 < _price_of(p) <= num]
+        head = f"Products at ₹{num} or below:"
+    else:
+        hits = [p for p in catalog.all() if _price_of(p) >= num]
+        head = f"Products from ₹{num} and up:"
+    if not hits:
+        return "Nothing in the catalog matches that price range right now. Want to see everything we have?"
+    hits.sort(key=_price_of)
+    lines = [head, ""]
+    for i, p in enumerate(hits, 1):
+        lines.append(f"{i}. **{(p.get('title') or '').strip()}** — ₹{_price_of(p)}")
+    lines.append("")
+    lines.append("Want details on any of these, or a discount?")
+    return "\n".join(lines)
+
+
+def _compare_reply(catalog: Catalog, state: SessionState, user_msg: str) -> Optional[str]:
+    results = catalog.search(user_msg, k=6)
+    picked: list = []
+    seen: set = set()
+    for p in results:
+        pid = p.get("post_id")
+        if pid in seen:
+            continue
+        seen.add(pid)
+        picked.append(p)
+        if len(picked) == 2:
+            break
+    if len(picked) < 2:
+        return None
+    state.current_product_id = picked[0].get("post_id")
+    blocks = [_format_one(p, with_cta=False) for p in picked]
+    return ("Here's how they compare — straight from the catalog:\n\n"
+            + "\n\n— — —\n\n".join(blocks)
+            + "\n\nWant a discount on either of these?")
 
 
 def _best_match(catalog: Catalog, user_msg: str, state: SessionState):
@@ -317,7 +404,23 @@ def _best_match(catalog: Catalog, user_msg: str, state: SessionState):
 
     results = catalog.search(user_msg, k=5)
     if results:
-        return results[0], False
+        top = results[0]
+        # Guard against incidental matches: if the query carries a distinctive
+        # word (not a generic filler / product noun) that appears NOWHERE in the
+        # matched product, the "match" is just noise — e.g. "iphone 15" latching
+        # onto "...15% polyster" in some description. Treat as not-in-catalog.
+        q_words = set(_re.findall(r"[a-z]+", m)) - _GENERIC_WORDS
+        if q_words:
+            blob = " ".join([
+                (top.get("title") or ""),
+                (top.get("description") or ""),
+                (top.get("categoryName") or ""),
+                (top.get("user_name") or ""),
+                (top.get("postCompany") or ""),
+            ]).lower()
+            if not any(w in blob for w in q_words):
+                return None, False
+        return top, False
     # No keyword match at all. If there's a focal AND the query is plausibly
     # still about it (no new distinctive nouns), use it; otherwise None.
     distinctive = set(_re.findall(r"[a-z0-9]+", m)) - _GENERIC_WORDS
@@ -346,7 +449,20 @@ def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str
     wants_list = (not user_msg.strip()) or any(
         k in msg_lower for k in ("all product", "all the product", "everything",
                                  "list all", "show all", "what products", "what do you have",
-                                 "what all", "show me products", "your products")
+                                 "what all", "show me products", "your products",
+                                 "available products", "product list", "catalogue", "catalog",
+                                 "what products are available", "what are the products",
+                                 "what you have", "what u have", "what you've got", "what you got",
+                                 "what do you sell", "what all you have", "show me what you",
+                                 "all you have", "what are your")
+    ) or (
+        # Order-independent: "what / which / show / list ... product(s) / items /
+        # catalog ..." with no price/detail qualifier → buyer wants the catalog,
+        # regardless of phrasing ("what are the products you have", "which all
+        # items do you sell", "show me what you've got").
+        bool(re.search(r"\b(what|which|show|list|give|see|view|browse|all)\b", msg_lower))
+        and bool(re.search(r"\b(products?|items?|stuff|catalog(?:ue)?|stock|collection|range|inventory)\b", msg_lower))
+        and not re.search(r"\b(price|cost|rate|detail|details|about|fabric|material|size|sizes|colou?r|discount|offer|gsm)\b", msg_lower)
     )
     if wants_list:
         items = catalog.all()
@@ -360,6 +476,22 @@ def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str
         lines.append("")
         lines.append("Tell me which one you'd like details on, or ask for a discount.")
         return "\n".join(lines)
+
+    # "compare X and Y", "X vs Y"
+    if any(k in msg_lower for k in _COMPARE_KEYS):
+        cmp_reply = _compare_reply(catalog, state, user_msg)
+        if cmp_reply is not None:
+            return cmp_reply
+
+    # "cheapest tshirt", "most expensive one"
+    sup_reply = _superlative_reply(catalog, state, msg_lower)
+    if sup_reply is not None:
+        return sup_reply
+
+    # "tshirt under 150", "anything below ₹130", "over 200"
+    rng_reply = _range_reply(catalog, msg_lower)
+    if rng_reply is not None:
+        return rng_reply
 
     # Specific-product question (price / details / fabric / "tell me about X" / follow-up).
     p, is_followup = _best_match(catalog, user_msg, state)

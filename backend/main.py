@@ -83,6 +83,9 @@ _LIST_ALL_HINTS = (
     "what products", "what do you have", "what all", "show all", "list all",
     "all product", "everything you have", "your products", "show me products",
     "what are your", "available products", "product list", "catalogue", "catalog",
+    "what products are available", "what are the products",
+    "what you have", "what u have", "what you've got", "what you got",
+    "what do you sell", "what all you have", "show me what you", "all you have",
 )
 _PRICE_HINTS = ("price", "rate", "cost", "how much", "kitne", "kitna", "kitana", "daam", "kimat")
 _DETAIL_HINTS = ("tell me about", "details", "detail of", "describe", "more about", "info on",
@@ -91,24 +94,51 @@ _FOLLOWUP_HINTS = ("is it ", "is this ", "does it ", "what size", "which size", 
                    "available", "fabric", "material", "colour", "color", "gsm", "cotton",
                    "polyester", "polyster")
 _HAVE_HINTS = ("do you have", "do you sell", "have you got", "got any", "any ", "looking for")
+_SUPERLATIVE_HINTS = ("cheapest", "most expensive", "costliest", "priciest",
+                      "lowest price", "highest price", "least expensive",
+                      "most affordable", "lowest priced", "highest priced",
+                      "lowest cost", "minimum price", "maximum price", "dearest")
+_COMPARE_HINTS = (" vs ", " vs.", "versus", "compare", "comparison", "difference between")
+_PRICE_RANGE_RE = re.compile(
+    r"\b(?:under|below|less\s+than|cheaper\s+than|within|upto|up\s+to|at\s+most|"
+    r"max(?:imum)?|over|above|more\s+than|at\s+least|min(?:imum)?)\s*₹?\s*\d{2,6}\b",
+    re.IGNORECASE,
+)
+# Order-independent "show me the catalog" detector (any phrasing).
+_LIST_ALL_RE = re.compile(
+    r"\b(what|which|show|list|give|see|view|browse|all)\b.*"
+    r"\b(products?|items?|stuff|catalog(?:ue)?|stock|collection|range|inventory)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_simple_product_query(msg: str) -> bool:
     """True if the message is one of the easy, deterministic-answerable shapes:
-    list-all, price-of-X, tell-me-about-X, or a short fabric/stock follow-up.
-    These are answered straight from the catalog (see _template_reply) instead
-    of going through the unreliable free-tier tool-calling agent.
+    list-all, price-of-X, tell-me-about-X, cheapest/dearest, compare X and Y,
+    price-range filter, or a short fabric/stock follow-up. These are answered
+    straight from the catalog (see _template_reply) instead of going through the
+    unreliable free-tier tool-calling agent.
     """
     m = (msg or "").lower().strip()
     if not m:
         return True
     if any(h in m for h in _LIST_ALL_HINTS):
         return True
+    if _LIST_ALL_RE.search(m) and not re.search(
+        r"\b(price|cost|rate|detail|details|about|fabric|material|size|sizes|colou?r|discount|offer|gsm)\b", m
+    ):
+        return True
     if any(h in m for h in _PRICE_HINTS):
         return True
     if any(h in m for h in _DETAIL_HINTS):
         return True
     if any(h in m for h in _HAVE_HINTS):
+        return True
+    if any(h in m for h in _SUPERLATIVE_HINTS):
+        return True
+    if any(h in m for h in _COMPARE_HINTS):
+        return True
+    if _PRICE_RANGE_RE.search(m):
         return True
     # short follow-ups about the focal product
     if len(m.split()) <= 7 and any(h in m for h in _FOLLOWUP_HINTS):
@@ -297,7 +327,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         if retrieved:
             top = retrieved[0]
             top_tokens = set(re.findall(r"[a-z0-9]+", (top.get("title") or "").lower())) - GENERIC
-            named_tokens = msg_tokens & top_tokens
+            # A buyer doesn't identify a product by a bare number — any digit
+            # overlap here ("₹100" vs "100% cotton") is the *offer* leaking in,
+            # not a product name. Require an alphabetic word in common.
+            named_tokens = {t for t in (msg_tokens & top_tokens) if not t.isdigit()}
             current_id = state.current_product_id
             if (
                 top.get("post_id") != current_id
@@ -383,11 +416,24 @@ def chat(req: ChatRequest) -> ChatResponse:
     if _is_simple_product_query(req.message):
         reply = _template_reply(CATALOG, state, req.message)
         sess.append(req.session_id, "assistant", reply)
-        focal = CATALOG.get(state.current_product_id) if state.current_product_id else None
+        r_low = reply.lstrip().lower()
+        m_low = req.message.lower().strip()
+        if r_low.startswith("here are all") or (not m_low) or any(h in m_low for h in _LIST_ALL_HINTS):
+            # Full-catalog listing → surface every product so the UI shows all images.
+            ui_products = CATALOG.all()
+        elif (r_low.startswith("i don't have that in the catalog")
+              or r_low.startswith("nothing in the catalog")
+              or r_low.startswith("products at ") or r_low.startswith("products from ")):
+            # Not-found or price-range listing → no single product card (the text
+            # already lists what's relevant; a lone stale focal would mislead).
+            ui_products = []
+        else:
+            focal = CATALOG.get(state.current_product_id) if state.current_product_id else None
+            ui_products = [focal] if focal else retrieved[:3]
         return ChatResponse(
             reply=reply,
             intent=intent,
-            products=_to_lite([focal] if focal else retrieved[:3]),
+            products=_to_lite(ui_products),
             negotiation=None,
             notify_seller=False,
         )

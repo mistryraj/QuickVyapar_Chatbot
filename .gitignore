@@ -46,6 +46,7 @@ logs/
 *.docx
 *.pdf
 
+
 # Internship report tooling — not part of the chatbot project
 docs/
 scripts/generate_internship_report.py

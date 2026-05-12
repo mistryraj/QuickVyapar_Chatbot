@@ -85,10 +85,31 @@ FAREWELL_PATTERNS = [
 
 _PRICE_RE = re.compile(r"(?:₹|rs\.?|rupees?)?\s*(\d{2,6})\s*(?:rs|rupees?|/-)?", re.IGNORECASE)
 
+# Numbers that are clearly quantities, not prices: "500 pieces", "100 pcs",
+# "2 dozen", "order of 50 units". These must NOT be read as a buyer's offer.
+_QUANTITY_RE = re.compile(
+    r"\b\d{1,7}\s*(?:pieces?|pcs|pc|nos\.?|qty|quantity|units?|dozens?|sets?|"
+    r"items?|bundles?|packs?|cartons?|boxes?|box|kg|kgs|grams?)\b",
+    re.IGNORECASE,
+)
+# "for 500 pieces", "order 500", "need 500 of" — quantity context before the number.
+_QUANTITY_CONTEXT_RE = re.compile(
+    r"\b(?:order(?:ing)?|need|want|buy|buying|take|require|qty|quantity)\s+(?:of\s+)?\d{1,7}\b",
+    re.IGNORECASE,
+)
+
 
 def extract_offer(text: str) -> Optional[int]:
-    """Pull a buyer offer (a price number) from a negotiation utterance."""
-    matches = _PRICE_RE.findall(text or "")
+    """Pull a buyer offer (a price number) from a negotiation utterance.
+
+    Strips obvious quantity phrases first ("500 pieces", "order of 50") so a bulk
+    order is never mistaken for a price offer — that bug would auto-confirm a deal
+    at the listed price off a quantity word.
+    """
+    t = text or ""
+    t = _QUANTITY_RE.sub(" ", t)
+    t = _QUANTITY_CONTEXT_RE.sub(" ", t)
+    matches = _PRICE_RE.findall(t)
     if not matches:
         return None
     nums = [int(m) for m in matches if 10 <= int(m) <= 100000]
