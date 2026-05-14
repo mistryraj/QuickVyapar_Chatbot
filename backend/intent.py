@@ -69,6 +69,16 @@ GREETING_PATTERNS = [
     r"^\s*(hi|hello|hey|namaste|hii+|helo|good\s+(morning|evening|afternoon))\b",
 ]
 
+ACCEPT_PATTERNS = [
+    r"\b(ok|okay|fine|alright|haan|theek|theek\s*hai|deal|done)\b.{0,30}\b(accept|done|deal|ok|theek|agreed|agree|finaliz|confirm)\b",
+    r"\bi\s+(accept|agree|confirm|am\s+ok|am\s+fine|ll\s+take\s+it|take\s+it|take\s+that)\b",
+    r"\b(accept(ed)?|agreed|deal\s+(done|fixed|final|ok|confirmed))\b",
+    r"\b(ok|okay|haan|theek|yes|ya|yep|sure)\s*[,.]?\s*(deal|done|agreed|confirmed|finaliz)\b",
+    r"\bchalta\s+hai\b",  # hindi "that works"
+    r"\bmanzooor\b",      # hindi "accepted"
+    r"\bmanzoor\b",
+]
+
 FAREWELL_PATTERNS = [
     r"^\s*(thanks?|thank\s*you|thx|ty|tysm|thanku|shukriya|dhanyavad)\b\s*[.!]*\s*$",
     r"^\s*(thanks?|thank\s*you)[\s,!.]*(so\s+much|a\s+lot|very\s+much|bhai|bro|sir|madam)?[\s,!.]*$",
@@ -123,6 +133,10 @@ def classify(text: str) -> str:
     t = (text or "").lower().strip()
     if not t:
         return "OFF_TOPIC"
+
+    for pat in ACCEPT_PATTERNS:
+        if re.search(pat, t, flags=re.IGNORECASE):
+            return "ACCEPT"
 
     for pat in FAREWELL_PATTERNS:
         if re.search(pat, t, flags=re.IGNORECASE):

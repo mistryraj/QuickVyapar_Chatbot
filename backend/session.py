@@ -13,6 +13,7 @@ class SessionState:
         self.deal_accepted: bool = False
         self.deal_price: Optional[int] = None
         self.deal_product_id: Optional[str] = None
+        self.last_counter_price: Optional[int] = None
 
 
 _sessions: Dict[str, SessionState] = defaultdict(SessionState)
@@ -33,3 +34,4 @@ def reset_negotiation(session_id: str) -> None:
     state = _sessions[session_id]
     state.negotiation_round = 0
     state.last_offer = None
+    state.last_counter_price = None

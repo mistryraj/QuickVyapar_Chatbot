@@ -49,5 +49,6 @@ logs/
 
 # Internship report tooling — not part of the chatbot project
 docs/
-scripts/generate_internship_report.py
-scripts/render_diagrams.py
+scripts/build_report.py
+scripts/patch_report.py
+New diagrams

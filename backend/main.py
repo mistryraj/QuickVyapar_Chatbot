@@ -267,6 +267,34 @@ def chat(req: ChatRequest) -> ChatResponse:
         sess.append(req.session_id, "assistant", GREETING_REPLY)
         return ChatResponse(reply=GREETING_REPLY, intent=intent)
 
+    if intent == "ACCEPT":
+        focal = CATALOG.get(state.current_product_id) if state.current_product_id else None
+        if focal is not None and not state.deal_accepted:
+            # Use last counter price bot offered; fall back to listed price.
+            agreed = state.last_counter_price or int(focal.get("priceInt") or 0)
+            state.deal_accepted = True
+            state.deal_price = agreed
+            state.deal_product_id = focal.get("post_id")
+            reply = _deal_confirmation_reply(focal, agreed)
+            sess.append(req.session_id, "assistant", reply)
+            return ChatResponse(
+                reply=reply,
+                intent=intent,
+                products=_to_lite([focal]),
+                negotiation=None,
+                notify_seller=True,
+            )
+        if state.deal_accepted:
+            focal = CATALOG.get(state.deal_product_id) if state.deal_product_id else focal
+            reply = (
+                f"Deal already confirmed at ₹{state.deal_price}! "
+                "The seller will be in touch shortly."
+            )
+        else:
+            reply = "Which product would you like to accept a deal on? Let me know and I'll confirm it."
+        sess.append(req.session_id, "assistant", reply)
+        return ChatResponse(reply=reply, intent=intent)
+
     if intent == "REQUEST_HUMAN":
         focal = CATALOG.get(state.current_product_id) if state.current_product_id else None
         if focal is not None:
@@ -391,6 +419,7 @@ def chat(req: ChatRequest) -> ChatResponse:
             )
         # Counter offer — deterministic phrasing from the engine, no LLM call needed.
         state.current_product_id = target.get("post_id")
+        state.last_counter_price = outcome.counter_price
         reply = outcome.message_hint
         sess.append(req.session_id, "assistant", reply)
         return ChatResponse(
