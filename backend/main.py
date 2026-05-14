@@ -110,6 +110,15 @@ _LIST_ALL_RE = re.compile(
     r"\b(products?|items?|stuff|catalog(?:ue)?|stock|collection|range|inventory)\b",
     re.IGNORECASE,
 )
+# If any of these appear the query is analytical/open-ended → must go to agent.
+_OPEN_ENDED_RE = re.compile(
+    r"\b(best|better|recommend|suggest|suit|suitable|good\s+for|ideal|perfect\s+for|"
+    r"margin|profit|resell|resale|wholesale|occasion|gift|student|college|office|"
+    r"different|difference|special|unique|stand\s*out|makes?\s+your|why\s+should|"
+    r"kaunsa|konsa|kaisa|achha|sabse\s+acch|suggest\s+kar|batao|bataye|"
+    r"interesting|tell\s+me\s+something|fun\s+fact)\b",
+    re.IGNORECASE,
+)
 
 
 def _is_simple_product_query(msg: str) -> bool:
@@ -122,6 +131,9 @@ def _is_simple_product_query(msg: str) -> bool:
     m = (msg or "").lower().strip()
     if not m:
         return True
+    # Analytical / opinion queries must go to agent regardless of other signals.
+    if _OPEN_ENDED_RE.search(m):
+        return False
     if any(h in m for h in _LIST_ALL_HINTS):
         return True
     if _LIST_ALL_RE.search(m) and not re.search(
@@ -181,7 +193,12 @@ def favicon():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "products": len(CATALOG.all())}
+    from .vectorstore import available as vs_available
+    try:
+        vs_ok = vs_available()
+    except Exception:
+        vs_ok = False
+    return {"ok": True, "products": len(CATALOG.all()), "vector_search": vs_ok}
 
 
 @app.get("/greeting")

@@ -25,6 +25,7 @@ from .config import (
     OPENROUTER_API_KEY, MISTRAL_API_KEY,
     GROQ_MODEL, GEMINI_MODEL, CEREBRAS_MODEL,
     OPENROUTER_MODEL, MISTRAL_MODEL,
+    LLM_TIMEOUT_SECONDS,
 )
 from .intent import classify
 from .negotiation import negotiate
@@ -185,69 +186,65 @@ def build_tools(catalog: Catalog, state: SessionState):
 
 
 def _build_model_chain():
-    """Multi-tier fallback chain. Returns chain (or None if zero providers configured).
+    """Build ordered list of (provider_name, model) tuples. Each is tried
+    sequentially in run_agent — `create_agent` is called per-provider so
+    `bind_tools` works (RunnableWithFallbacks doesn't expose bind_tools).
     Order: Groq → Cerebras → Gemini → OpenRouter → Mistral.
-    Each provider wrapped in try/except so missing package or bad key skips silently.
     """
     chain: list = []
 
     if GROQ_API_KEY:
         try:
             from langchain_groq import ChatGroq
-            chain.append(ChatGroq(
+            chain.append(("Groq", ChatGroq(
                 model=GROQ_MODEL, api_key=GROQ_API_KEY,
-                temperature=0.3, max_tokens=400, timeout=15,
-            ))
+                temperature=0.3, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS,
+            )))
         except Exception as e:
             logger.warning("Groq init failed: %s", e)
 
     if CEREBRAS_API_KEY:
         try:
             from langchain_cerebras import ChatCerebras
-            chain.append(ChatCerebras(
+            chain.append(("Cerebras", ChatCerebras(
                 model=CEREBRAS_MODEL, api_key=CEREBRAS_API_KEY,
-                temperature=0.3, max_tokens=400, timeout=15,
-            ))
+                temperature=0.3, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS,
+            )))
         except Exception as e:
             logger.warning("Cerebras init failed: %s", e)
 
     if GEMINI_API_KEY:
         try:
             from langchain_google_genai import ChatGoogleGenerativeAI
-            chain.append(ChatGoogleGenerativeAI(
+            chain.append(("Gemini", ChatGoogleGenerativeAI(
                 model=GEMINI_MODEL, google_api_key=GEMINI_API_KEY,
                 temperature=0.3, max_output_tokens=400,
-            ))
+            )))
         except Exception as e:
             logger.warning("Gemini init failed: %s", e)
 
     if OPENROUTER_API_KEY:
         try:
             from langchain_openai import ChatOpenAI
-            chain.append(ChatOpenAI(
+            chain.append(("OpenRouter", ChatOpenAI(
                 model=OPENROUTER_MODEL, api_key=OPENROUTER_API_KEY,
                 base_url="https://openrouter.ai/api/v1",
-                temperature=0.3, max_tokens=400, timeout=15,
-            ))
+                temperature=0.3, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS,
+            )))
         except Exception as e:
             logger.warning("OpenRouter init failed: %s", e)
 
     if MISTRAL_API_KEY:
         try:
             from langchain_mistralai import ChatMistralAI
-            chain.append(ChatMistralAI(
+            chain.append(("Mistral", ChatMistralAI(
                 model=MISTRAL_MODEL, api_key=MISTRAL_API_KEY,
-                temperature=0.3, max_tokens=400, timeout=15,
-            ))
+                temperature=0.3, max_tokens=400, timeout=LLM_TIMEOUT_SECONDS,
+            )))
         except Exception as e:
             logger.warning("Mistral init failed: %s", e)
 
-    if not chain:
-        return None
-    primary = chain[0]
-    if len(chain) == 1:
-        return primary
-    return primary.with_fallbacks(chain[1:])
+    return chain if chain else None
 
 
 # Backwards-compat alias.
@@ -446,6 +443,21 @@ def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str
     if intent == "FAREWELL":
         return "Glad I could help 🙏 Have a great day!"
 
+    # Analytical / opinion questions reached template only because every LLM
+    # provider failed. Don't dump the catalog — give a graceful holding reply
+    # so the buyer knows we heard them.
+    if re.search(
+        r"\b(best|better|recommend|suggest|suit|suitable|good\s+for|ideal|"
+        r"perfect\s+for|margin|profit|resell|resale|occasion|gift|student|"
+        r"college|office|different|difference|special|unique|stand\s*out|"
+        r"makes?\s+your|why\s+should|kaunsa|konsa|kaisa|sabse\s+acch|"
+        r"interesting|tell\s+me\s+something|fun\s+fact)\b",
+        msg_lower,
+    ):
+        return ("Good question! I can help you pick the right one. "
+                "Are you buying for resale, personal use, or a specific occasion? "
+                "I can also list everything we have if you'd like to browse.")
+
     wants_list = (not user_msg.strip()) or any(
         k in msg_lower for k in ("all product", "all the product", "everything",
                                  "list all", "show all", "what products", "what do you have",
@@ -531,24 +543,23 @@ def _template_reply(catalog: Catalog, state: SessionState, user_msg: str) -> str
 
 
 def run_agent(catalog: Catalog, state: SessionState, user_message: str) -> str:
-    """Invoke agent for one buyer turn. Never raises — falls back to deterministic
-    template responder if every LLM provider fails. Always returns useful reply."""
-    model = _build_model_chain()
-    if model is None:
+    """Invoke agent for one buyer turn. Tries each LLM provider in order;
+    falls back to deterministic template only if EVERY provider fails.
+    Never raises — always returns a useful reply.
+    """
+    chain = _build_model_chain()
+    if not chain:
         logger.warning("No LLM providers configured — using template fallback.")
         return _template_reply(catalog, state, user_message)
 
     tools = build_tools(catalog, state)
-    agent = create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
 
     # Replay ONLY the last prior buyer message (not assistant replies). This
     # gives just enough context to resolve pronouns ("is it cotton") without
-    # anchoring the weak model to the *topic* of the previous bot reply (e.g.
-    # an in-progress negotiation). The focal product itself is carried in
-    # `state.current_product_id`, which the tools read directly.
+    # anchoring the weak model to the *topic* of the previous bot reply.
     history_msgs = []
     prior_user = None
-    for m in reversed(state.history[:-1]):  # skip the just-appended user msg
+    for m in reversed(state.history[:-1]):
         if m["role"] == "user":
             prior_user = m["content"]
             break
@@ -557,28 +568,47 @@ def run_agent(catalog: Catalog, state: SessionState, user_message: str) -> str:
 
     messages = history_msgs + [HumanMessage(content=user_message)]
 
-    result = None
     last_err = None
-    for attempt in range(2):  # one retry — Groq llama often emits a bad tool call once, then recovers
+    for provider_name, model in chain:
         try:
-            result = agent.invoke({"messages": messages})
-            break
+            agent = create_agent(model=model, tools=tools, system_prompt=SYSTEM_PROMPT)
         except Exception as e:
+            logger.warning("%s: create_agent failed: %s", provider_name, e)
             last_err = e
-            msg = str(e).lower()
-            if "tool_use_failed" in msg or "failed to call a function" in msg or "tool call validation" in msg:
-                logger.warning("Tool-call malformed (attempt %d) — retrying.", attempt + 1)
-                continue
-            break  # other errors: don't retry, drop to template
-    if result is None:
-        logger.warning("Agent failed (%s) — using deterministic template responder.", last_err)
-        return _template_reply(catalog, state, user_message)
+            continue
 
-    # Extract final assistant message.
-    msgs = result.get("messages", []) if isinstance(result, dict) else []
-    for m in reversed(msgs):
-        content = getattr(m, "content", None)
-        role = getattr(m, "type", "") or getattr(m, "role", "")
-        if content and role in ("ai", "assistant"):
-            return content if isinstance(content, str) else str(content)
+        result = None
+        for attempt in range(2):  # one retry for malformed tool calls
+            try:
+                result = agent.invoke({"messages": messages})
+                break
+            except Exception as e:
+                last_err = e
+                emsg = str(e).lower()
+                if ("tool_use_failed" in emsg
+                        or "failed to call a function" in emsg
+                        or "tool call validation" in emsg):
+                    logger.warning("%s tool-call malformed (attempt %d) — retrying.",
+                                   provider_name, attempt + 1)
+                    continue
+                logger.warning("%s invoke failed: %s", provider_name, e)
+                break
+
+        if result is None:
+            logger.warning("%s exhausted retries — trying next provider.", provider_name)
+            continue
+
+        # Extract final assistant message.
+        msgs = result.get("messages", []) if isinstance(result, dict) else []
+        for m in reversed(msgs):
+            content = getattr(m, "content", None)
+            role = getattr(m, "type", "") or getattr(m, "role", "")
+            if content and role in ("ai", "assistant"):
+                text = content if isinstance(content, str) else str(content)
+                if text.strip():
+                    logger.info("Agent reply from %s (%d chars).", provider_name, len(text))
+                    return text
+        logger.warning("%s returned empty content — trying next provider.", provider_name)
+
+    logger.error("All LLM providers failed (last_err=%s) — template fallback.", last_err)
     return _template_reply(catalog, state, user_message)
